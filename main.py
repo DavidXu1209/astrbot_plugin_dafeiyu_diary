@@ -1,5 +1,5 @@
-"""私人日记插件：只记录主人私聊，每晚写一篇日记存档，主人发 /日记 查看。
-补写漏掉的日记；每天整理一份“关于我自己”的笔记；
+"""私人日记插件：只记录主人私聊，每晚写一篇日记存档，主人发 /日记 或「看看日记」查看原文。
+写点前查看当天会先存临时稿，到点按全天记录定稿。补写漏掉的日记；每天整理一份“关于我自己”的笔记；
 主人私聊时把自我笔记和最近日记注入到系统提示词里当背景，让机器人的性格和心情能延续。"""
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.star import Context, Star, StarTools
 
 from .diary_core import (
+    DIARY_CHAT_RULE,
     DIARY_SYSTEM,
     SELF_SYSTEM,
     DiaryStore,
@@ -21,12 +22,17 @@ from .diary_core import (
     build_self_prompt,
     clean_notes,
     day_key,
+    FOLLOW_SAME,
+    diary_follow_arg,
+    diary_view_arg,
+    is_before_write_time,
     now_cst,
     parse_day_arg,
     seconds_until,
 )
 
 PLUGIN = "astrbot_plugin_dafeiyu_diary"
+FOLLOW_WINDOW = 20 * 60  # 看完日记后，这段时间内的短跟话仍回原文
 SKIP_OWNER = re.compile(r"^/?\s*(日记|自我笔记|reset|new|过稿|拒稿|看稿|撤稿|写说说|写稿|发说说|sid|help|qzone)(\s|$)", re.I)
 
 
@@ -37,6 +43,7 @@ class DiaryPlugin(Star):
         self.store = DiaryStore(Path(StarTools.get_data_dir(PLUGIN)))
         self._tasks: list[asyncio.Task] = []
         self._lock = asyncio.Lock()
+        self._diary_follow: dict | None = None
 
     # ---------- identity ----------
     @property
@@ -98,7 +105,8 @@ class DiaryPlugin(Star):
         if not self._is_owner_private(event):
             return
         text = (event.message_str or "").strip()
-        if text and not SKIP_OWNER.match(text):
+        # 看日记的说法走原文回复，不进聊天记录，避免夜里写日记时把“念日记”当成交谈。
+        if text and not SKIP_OWNER.match(text) and diary_view_arg(text) is None and not self._is_follow(event, text):
             self.store.append("owner", text, now_cst())
 
     @filter.after_message_sent()
@@ -121,8 +129,9 @@ class DiaryPlugin(Star):
             notes = self.store.read_notes()
             diaries = self.store.recent_diaries(int(self.config.get("inject_diary_days", 2)))
             extra = build_injection(notes, diaries, int(self.config.get("inject_diary_chars", 350)))
-            if extra:
-                req.system_prompt = f"{req.system_prompt or ''}\n\n{extra}"
+            block = "\n\n".join(part for part in (extra, DIARY_CHAT_RULE) if part)
+            if block:
+                req.system_prompt = f"{req.system_prompt or ''}\n\n{block}"
         except Exception as exc:
             logger.warning(f"[diary] inject failed: {type(exc).__name__}")
 
@@ -157,19 +166,22 @@ class DiaryPlugin(Star):
         logger.info(f"[diary] self notes updated from {day} ({len(new.splitlines())} items)")
 
     # ---------- writing ----------
-    async def _write(self, day: str, update_notes: bool = True) -> str | None:
+    async def _write(self, day: str, update_notes: bool = True, finalize: bool = True) -> str | None:
         async with self._lock:
             existing = self.store.read_diary(day)
-            if existing:
-                return existing
+            provisional = self.store.is_provisional(day)
+            # 定稿前再问，返回同一篇临时稿；到点 finalize 才用完整记录重写。
+            if existing and not (finalize and provisional):
+                return existing.strip()
             transcript = self.store.transcript(day, int(self.config.get("max_log_chars", 6000)))
             if not transcript:
-                return None
+                return existing.strip() if existing else None
             text = await self._ask(build_prompt(transcript), DIARY_SYSTEM)
             if not text:
-                return None
+                return existing.strip() if existing else None
             self.store.save_diary(day, text)
-            logger.info(f"[diary] wrote diary for {day} ({len(text)} chars)")
+            self.store.set_provisional(day, not finalize)
+            logger.info(f"[diary] wrote diary for {day} ({len(text)} chars, finalize={finalize})")
             if update_notes and day not in self.store.notes_done():
                 with suppress(Exception):
                     await self._update_notes(day)
@@ -185,25 +197,70 @@ class DiaryPlugin(Star):
         if arg.strip() in {"列表", "目录"}:
             days = self.store.list_days()
             msg = "写过的日记：\n" + "\n".join(days) if days else "还一篇都没写呢。"
-            yield event.plain_result(msg)
+            yield self._skip(event.plain_result(msg))
             return
         day = parse_day_arg(arg, today)
         if day is None:
-            yield event.plain_result("日期这么写：/日记、/日记 昨天、/日记 11-06、/日记 列表")
+            yield self._skip(event.plain_result("日期这么写：/日记、/日记 昨天、/日记 11-06、/日记 列表"))
             return
+        self._arm_follow(event, arg)
         text = self.store.read_diary(day)
-        if text is None and day <= today.isoformat() and self.store.read_log(day):
-            # 今天的日记临时写，晚上再整理自我笔记（那时聊天更完整）。
-            text = await self._write(day, update_notes=(day != today.isoformat()))
+        provisional = self.store.is_provisional(day)
+        # 写点之前的当天日记是临时稿：先给同一篇，到 write_time 再用全天记录定稿。
+        before_cutoff = day == today.isoformat() and is_before_write_time(
+            str(self.config.get("write_time", "23:50")), now_cst()
+        )
+        needs_write = self.store.read_log(day) and (
+            text is None or (provisional and not before_cutoff)
+        )
+        if needs_write and day <= today.isoformat():
+            text = await self._write(day, update_notes=not before_cutoff, finalize=not before_cutoff)
         elif text is None and day == today.isoformat():
-            yield event.plain_result("今天还没跟我聊几句呢，没得写。")
+            yield self._skip(event.plain_result("今天还没跟我聊几句呢，没得写。"))
             return
-        if text is None:
-            yield event.plain_result(f"{day} 没有日记。")
+        if text is None or not str(text).strip():
+            yield self._skip(event.plain_result(f"{day} 没有日记。"))
             return
-        result = event.plain_result(f"【{day} 的日记】\n{text}")
-        result._diary_skip = True  # don't log the diary itself as chat
-        yield result
+        yield self._skip(event.plain_result(f"【{day} 的日记】\n{str(text).strip()}"))
+
+    def _arm_follow(self, event: AstrMessageEvent, arg: str) -> None:
+        self._diary_follow = {"umo": event.unified_msg_origin, "at": now_cst(), "arg": arg}
+
+    def _is_follow(self, event: AstrMessageEvent, text: str) -> bool:
+        return self._resolve_follow(event, text) is not None
+
+    def _resolve_follow(self, event: AstrMessageEvent, text: str) -> str | None:
+        state = self._diary_follow
+        if not state or state.get("umo") != event.unified_msg_origin:
+            return None
+        if (now_cst() - state["at"]).total_seconds() > FOLLOW_WINDOW:
+            return None
+        kind = diary_follow_arg(text)
+        if kind is None:
+            return None
+        if kind == FOLLOW_SAME:
+            return state.get("arg") or ""
+        return kind
+
+    def _clear_follow(self, event: AstrMessageEvent) -> None:
+        state = self._diary_follow
+        if state and state.get("umo") == event.unified_msg_origin:
+            self._diary_follow = None
+
+    @filter.event_message_type(filter.EventMessageType.PRIVATE_MESSAGE, priority=20)
+    async def read_diary_phrase(self, event: AstrMessageEvent):
+        """「看看日记」以及刚看完后的短跟话，直接回文件，不让人设现编。"""
+        if not self._is_owner_private(event):
+            return
+        text = event.message_str or ""
+        arg = diary_view_arg(text)
+        if arg is None:
+            arg = self._resolve_follow(event, text)
+        if arg is None:
+            self._clear_follow(event)
+            return
+        async for result in self.show_diary(event, arg):
+            yield result
 
     @filter.command("自我笔记")
     async def show_notes(self, event: AstrMessageEvent, arg: str = ""):
