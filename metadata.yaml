@@ -4,7 +4,7 @@ desc: |
   记录主人的私聊，每晚自动写一篇只给主人看的私人日记并存到本地，主人用 /日记 查看。
   同时整理机器人的“自我笔记”，在主人私聊时注入系统提示词作为背景，让性格和心情能延续。
   只对配置的主人 QQ 生效，不主动推送、不发群；写日记依赖 AstrBot 中已配置的模型提供商。
-version: 0.2.1
+version: 0.2.2
 author: David Xu
 repo: https://github.com/DavidXu1209/astrbot_plugin_dafeiyu_diary
 astrbot_version: ">=4.16.0"

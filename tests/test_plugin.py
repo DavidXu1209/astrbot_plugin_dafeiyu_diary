@@ -87,6 +87,25 @@ class PluginTests(unittest.TestCase):
         self.run_(self.p._write(day))
         self.assertEqual(self.provs["b"].calls, 1)
 
+    def test_provisional_stays_until_finalize(self):
+        self.run_(self.p.record_owner(Ev(self.owner, "下午甩了表情包")))
+        day = self.m.day_key(self.m.now_cst())
+        self.provs["b"].text = "临时稿只写了表情包。"
+        first = self.run_(self.p._write(day, update_notes=False, finalize=False))
+        self.assertEqual(first, "临时稿只写了表情包。")
+        self.assertTrue(self.p.store.is_provisional(day))
+        self.run_(self.p.record_owner(Ev(self.owner, "晚上又说了米线")))
+        self.provs["b"].text = "全天：表情包和米线。"
+        again = self.run_(self.p._write(day, update_notes=False, finalize=False))
+        self.assertEqual(again, "临时稿只写了表情包。")
+        self.assertEqual(self.provs["b"].calls, 1)
+        final = self.run_(self.p._write(day, update_notes=False, finalize=True))
+        self.assertEqual(final, "全天：表情包和米线。")
+        self.assertFalse(self.p.store.is_provisional(day))
+        self.assertIn("米线", self.p.store.read_diary(day))
+        self.run_(self.p._write(day, update_notes=False, finalize=True))
+        self.assertEqual(self.provs["b"].calls, 2)
+
     def collect(self, ev, arg=""):
         async def go(): return [r async for r in self.p.show_diary(ev, arg)]
         return self.run_(go())
@@ -101,6 +120,22 @@ class PluginTests(unittest.TestCase):
         self.assertTrue(out[0]._diary_skip)
         self.assertIn("没有日记", self.collect(Ev(self.owner), "2026-01-01")[0].text)
         self.assertIn("日期这么写", self.collect(Ev(self.owner), "abc")[0].text)
+
+    def collect_phrase(self, ev):
+        async def go(): return [r async for r in self.p.read_diary_phrase(ev)]
+        return self.run_(go())
+
+    def test_phrase_returns_file_and_is_not_logged(self):
+        day = self.m.day_key(self.m.now_cst())
+        self.p.store.save_diary(day, "文件里的原文。")
+        out = self.collect_phrase(Ev(self.owner, "看看日记"))
+        self.assertIn("文件里的原文。", out[0].text)
+        self.assertTrue(out[0]._diary_skip)
+        self.assertTrue(out[0].text.startswith(f"【{day} 的日记】"))
+        self.run_(self.p.record_owner(Ev(self.owner, "看看日记")))
+        self.assertEqual(self.p.store.read_log(day), [])
+        self.assertEqual(self.collect_phrase(Ev(self.owner, "我看看今天的")), [])
+        self.assertEqual(self.collect_phrase(Ev("qq:FriendMessage:222", "看看日记")), [])
 
 
     # ---------- v0.2 ----------
@@ -133,6 +168,8 @@ class PluginTests(unittest.TestCase):
         self.run_(self.p.inject_self(Ev(self.owner), req))
         self.assertIn("我讨厌香菜", req.system_prompt)
         self.assertIn("今天他夸我了", req.system_prompt)
+        self.assertIn("不要在聊天里念日记正文", req.system_prompt)
+        self.assertIn("不是私藏", req.system_prompt)
         self.assertTrue(req.system_prompt.startswith("人设"))
         other = SimpleNamespace(system_prompt="人设")
         self.run_(self.p.inject_self(Ev("qq:GroupMessage:9"), other))

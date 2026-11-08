@@ -2,7 +2,9 @@ import sys, tempfile, unittest
 from datetime import date, datetime
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from diary_core import CST, DiaryStore, build_prompt, parse_day_arg, seconds_until
+from diary_core import (
+    CST, DiaryStore, build_prompt, diary_view_arg, is_before_write_time, parse_day_arg, seconds_until,
+)
 
 
 class CoreTests(unittest.TestCase):
@@ -56,6 +58,7 @@ class CoreTests(unittest.TestCase):
         today = date(2026, 11, 6)
         self.assertEqual(parse_day_arg("", today), "2026-11-06")
         self.assertEqual(parse_day_arg("昨天", today), "2026-11-05")
+        self.assertEqual(parse_day_arg("前天", today), "2026-11-04")
         self.assertEqual(parse_day_arg("11-3", today), "2026-11-03")
         self.assertEqual(parse_day_arg("2025-12-31", today), "2025-12-31")
         self.assertIsNone(parse_day_arg("13-40", today))
@@ -70,7 +73,37 @@ class CoreTests(unittest.TestCase):
     def test_prompt_contains_rules_and_transcript(self):
         p = build_prompt("[10:00] 他：hi")
         self.assertIn("不编造", p)
+        self.assertIn("主要互动都写进去", p)
         self.assertTrue(p.endswith("[10:00] 他：hi"))
+
+    def test_diary_view_arg_routes_requests_and_leaves_chat(self):
+        self.assertEqual(diary_view_arg("看看日记"), "")
+        self.assertEqual(diary_view_arg("看一下今天的日记"), "")
+        self.assertEqual(diary_view_arg("念一下昨天的日记"), "昨天")
+        self.assertEqual(diary_view_arg("看看前天的日记"), "前天")
+        self.assertEqual(diary_view_arg("发给我 11-06 的日记"), "11-06")
+        self.assertEqual(diary_view_arg("看看日记列表"), "列表")
+        self.assertIsNone(diary_view_arg("/日记"))
+        self.assertIsNone(diary_view_arg("日记 昨天"))
+        self.assertIsNone(diary_view_arg("我看看今天的"))
+        self.assertIsNone(diary_view_arg("你昨天的日记写得好肉麻"))
+        self.assertIsNone(diary_view_arg("你看日记里那句"))
+
+    def test_before_write_time(self):
+        now = datetime(2026, 11, 8, 22, 17, tzinfo=CST)
+        self.assertTrue(is_before_write_time("23:50", now))
+        self.assertFalse(is_before_write_time("23:50", datetime(2026, 11, 8, 23, 50, tzinfo=CST)))
+
+    def test_pending_includes_provisional_and_prune_keeps_its_log(self):
+        self.store.save_diary("2026-11-08", "临时稿")
+        self.store.set_provisional("2026-11-08", True)
+        (Path(self.tmp.name) / "logs" / "2026-11-08.jsonl").write_text("{}\n", encoding="utf-8")
+        self.assertEqual(self.store.pending_days(date(2026, 11, 8), include_today=True), ["2026-11-08"])
+        self.assertEqual(self.store.pending_days(date(2026, 11, 9), include_today=False), ["2026-11-08"])
+        self.store.prune_logs(1, date(2026, 11, 20))
+        self.assertTrue((Path(self.tmp.name) / "logs" / "2026-11-08.jsonl").exists())
+        self.store.set_provisional("2026-11-08", False)
+        self.assertEqual(self.store.prune_logs(1, date(2026, 11, 20)), 1)
 
 
 if __name__ == "__main__":
