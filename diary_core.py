@@ -92,6 +92,43 @@ _DIARY_VIEW_VERB = re.compile(
 _DATE_IN_TEXT = re.compile(r"(?:\d{4}-)?\d{1,2}-\d{1,2}")
 
 
+# 看过日记之后，短跟话要回同一篇原文，而不是再交给人设写一版。
+FOLLOW_SAME = "*"
+_FOLLOW_SEE = re.compile(r"看看|看一下|看下|瞧瞧|瞧一下|给我看|我想看|我要看|念一|念念|再念")
+_FOLLOW_MORE = re.compile(
+    r"别的要记|没有别的|还有别的|还有吗|还有没|后面的|后面呢|再念|继续念|漏了|没写全|不完整|没念完|私藏"
+)
+_FOLLOW_COMPLAIN = re.compile(r"不应该|不全|不是今天|不是全天")
+
+
+def diary_follow_arg(text: str) -> str | None:
+    """刚看过日记时，把短跟话收成 show_diary 的参数。
+
+    返回 "" 表示今天，"昨天"/"前天" 表示换一天，FOLLOW_SAME 表示还看刚才那篇。
+    不是跟话就返回 None。句子里已经有「日记」的交给 diary_view_arg。
+    """
+    raw = (text or "").strip()
+    if not raw:
+        return None
+    s = re.sub(r"\s+", "", raw).strip("。！!？?~～啊呀吧呢哈嘛吗")
+    if not s or len(s) > 24 or "日记" in s or _COMMAND_DIARY.match(s):
+        return None
+    see = _FOLLOW_SEE.search(s)
+    more = _FOLLOW_MORE.search(s)
+    complain = _FOLLOW_COMPLAIN.search(s)
+    if not (see or more or complain):
+        return None
+    if "前天" in s:
+        return "前天"
+    if "昨天" in s or "昨日" in s:
+        return "昨天"
+    if "今天" in s or "今日" in s or "全天" in s:
+        return ""
+    if more or (see and not complain):
+        return FOLLOW_SAME
+    return None
+
+
 def diary_view_arg(text: str) -> str | None:
     """若这句话是在要看日记，返回交给 show_diary 的参数；命令形式和闲聊返回 None。"""
     raw = (text or "").strip()

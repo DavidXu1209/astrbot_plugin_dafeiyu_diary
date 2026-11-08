@@ -134,8 +134,27 @@ class PluginTests(unittest.TestCase):
         self.assertTrue(out[0].text.startswith(f"【{day} 的日记】"))
         self.run_(self.p.record_owner(Ev(self.owner, "看看日记")))
         self.assertEqual(self.p.store.read_log(day), [])
-        self.assertEqual(self.collect_phrase(Ev(self.owner, "我看看今天的")), [])
         self.assertEqual(self.collect_phrase(Ev("qq:FriendMessage:222", "看看日记")), [])
+
+    def test_followup_repeats_file_until_normal_chat(self):
+        from datetime import timedelta
+        day = self.m.day_key(self.m.now_cst())
+        self.p.store.save_diary(day, "文件里的原文。")
+        self.assertEqual(self.collect_phrase(Ev(self.owner, "我看看今天的")), [])
+        self.collect_phrase(Ev(self.owner, "看看日记"))
+        for text in ("我看看今天的", "不应该是今天全天的嘛", "难道没有别的要记嘛"):
+            out = self.collect_phrase(Ev(self.owner, text))
+            self.assertIn("文件里的原文。", out[0].text, text)
+            self.assertTrue(out[0]._diary_skip)
+        self.run_(self.p.record_owner(Ev(self.owner, "我看看今天的")))
+        self.assertEqual(self.p.store.read_log(day), [])
+        self.assertEqual(self.collect_phrase(Ev(self.owner, "今天好累")), [])
+        self.run_(self.p.record_owner(Ev(self.owner, "今天好累")))
+        self.assertEqual([r["text"] for r in self.p.store.read_log(day)], ["今天好累"])
+        self.assertEqual(self.collect_phrase(Ev(self.owner, "我看看今天的")), [])
+        self.collect_phrase(Ev(self.owner, "看看日记"))
+        self.p._diary_follow["at"] = self.m.now_cst() - timedelta(minutes=21)
+        self.assertEqual(self.collect_phrase(Ev(self.owner, "我看看今天的")), [])
 
 
     # ---------- v0.2 ----------

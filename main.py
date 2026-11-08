@@ -22,6 +22,8 @@ from .diary_core import (
     build_self_prompt,
     clean_notes,
     day_key,
+    FOLLOW_SAME,
+    diary_follow_arg,
     diary_view_arg,
     is_before_write_time,
     now_cst,
@@ -30,6 +32,7 @@ from .diary_core import (
 )
 
 PLUGIN = "astrbot_plugin_dafeiyu_diary"
+FOLLOW_WINDOW = 20 * 60  # 看完日记后，这段时间内的短跟话仍回原文
 SKIP_OWNER = re.compile(r"^/?\s*(日记|自我笔记|reset|new|过稿|拒稿|看稿|撤稿|写说说|写稿|发说说|sid|help|qzone)(\s|$)", re.I)
 
 
@@ -40,6 +43,7 @@ class DiaryPlugin(Star):
         self.store = DiaryStore(Path(StarTools.get_data_dir(PLUGIN)))
         self._tasks: list[asyncio.Task] = []
         self._lock = asyncio.Lock()
+        self._diary_follow: dict | None = None
 
     # ---------- identity ----------
     @property
@@ -102,7 +106,7 @@ class DiaryPlugin(Star):
             return
         text = (event.message_str or "").strip()
         # 看日记的说法走原文回复，不进聊天记录，避免夜里写日记时把“念日记”当成交谈。
-        if text and not SKIP_OWNER.match(text) and diary_view_arg(text) is None:
+        if text and not SKIP_OWNER.match(text) and diary_view_arg(text) is None and not self._is_follow(event, text):
             self.store.append("owner", text, now_cst())
 
     @filter.after_message_sent()
@@ -199,6 +203,7 @@ class DiaryPlugin(Star):
         if day is None:
             yield self._skip(event.plain_result("日期这么写：/日记、/日记 昨天、/日记 11-06、/日记 列表"))
             return
+        self._arm_follow(event, arg)
         text = self.store.read_diary(day)
         provisional = self.store.is_provisional(day)
         # 写点之前的当天日记是临时稿：先给同一篇，到 write_time 再用全天记录定稿。
@@ -218,13 +223,41 @@ class DiaryPlugin(Star):
             return
         yield self._skip(event.plain_result(f"【{day} 的日记】\n{str(text).strip()}"))
 
+    def _arm_follow(self, event: AstrMessageEvent, arg: str) -> None:
+        self._diary_follow = {"umo": event.unified_msg_origin, "at": now_cst(), "arg": arg}
+
+    def _is_follow(self, event: AstrMessageEvent, text: str) -> bool:
+        return self._resolve_follow(event, text) is not None
+
+    def _resolve_follow(self, event: AstrMessageEvent, text: str) -> str | None:
+        state = self._diary_follow
+        if not state or state.get("umo") != event.unified_msg_origin:
+            return None
+        if (now_cst() - state["at"]).total_seconds() > FOLLOW_WINDOW:
+            return None
+        kind = diary_follow_arg(text)
+        if kind is None:
+            return None
+        if kind == FOLLOW_SAME:
+            return state.get("arg") or ""
+        return kind
+
+    def _clear_follow(self, event: AstrMessageEvent) -> None:
+        state = self._diary_follow
+        if state and state.get("umo") == event.unified_msg_origin:
+            self._diary_follow = None
+
     @filter.event_message_type(filter.EventMessageType.PRIVATE_MESSAGE, priority=20)
     async def read_diary_phrase(self, event: AstrMessageEvent):
-        """「看看日记」这类说法直接回文件，不让人设现编一篇。"""
+        """「看看日记」以及刚看完后的短跟话，直接回文件，不让人设现编。"""
         if not self._is_owner_private(event):
             return
-        arg = diary_view_arg(event.message_str or "")
+        text = event.message_str or ""
+        arg = diary_view_arg(text)
         if arg is None:
+            arg = self._resolve_follow(event, text)
+        if arg is None:
+            self._clear_follow(event)
             return
         async for result in self.show_diary(event, arg):
             yield result

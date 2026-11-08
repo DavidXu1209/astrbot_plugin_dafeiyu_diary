@@ -3,7 +3,8 @@ from datetime import date, datetime
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from diary_core import (
-    CST, DiaryStore, build_prompt, diary_view_arg, is_before_write_time, parse_day_arg, seconds_until,
+    CST, FOLLOW_SAME, DiaryStore, build_prompt, diary_follow_arg, diary_view_arg,
+    is_before_write_time, parse_day_arg, seconds_until,
 )
 
 
@@ -88,6 +89,15 @@ class CoreTests(unittest.TestCase):
         self.assertIsNone(diary_view_arg("我看看今天的"))
         self.assertIsNone(diary_view_arg("你昨天的日记写得好肉麻"))
         self.assertIsNone(diary_view_arg("你看日记里那句"))
+
+    def test_diary_follow_arg_only_short_continuations(self):
+        self.assertEqual(diary_follow_arg("我看看今天的"), "")
+        self.assertEqual(diary_follow_arg("不应该是今天全天的嘛"), "")
+        self.assertEqual(diary_follow_arg("难道没有别的要记嘛"), FOLLOW_SAME)
+        self.assertEqual(diary_follow_arg("看看昨天的"), "昨天")
+        self.assertIsNone(diary_follow_arg("今天好累"))
+        self.assertIsNone(diary_follow_arg("看看日记"))
+        self.assertIsNone(diary_follow_arg("在不在"))
 
     def test_before_write_time(self):
         now = datetime(2026, 11, 8, 22, 17, tzinfo=CST)
