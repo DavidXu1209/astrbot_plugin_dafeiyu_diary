@@ -76,6 +76,7 @@ class CoreTests(unittest.TestCase):
         self.assertIn("不编造", p)
         self.assertIn("主要互动都写进去", p)
         self.assertIn("自言自语", p)
+        self.assertIn("中文括号", p)
         self.assertTrue(p.endswith("[10:00] 他：hi"))
 
     def test_diary_view_arg_routes_requests_and_leaves_chat(self):
