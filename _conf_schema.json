@@ -1,0 +1,68 @@
+{
+  "owner_qq": {
+    "description": "主人 QQ 号",
+    "type": "string",
+    "default": "",
+    "hint": "只记录、只回应这个 QQ 号的私聊。留空则插件完全不工作；填 QQ 号本身，不要带引号或其他前缀。"
+  },
+  "adapter_id": {
+    "description": "QQ 平台适配器实例 ID",
+    "type": "string",
+    "default": "",
+    "hint": "填 AstrBot 后台「平台适配器」里这个 aiocqhttp 实例的 ID。留空时插件会从主人私聊事件的会话标识里自动推断，一般也能用。"
+  },
+  "provider_ids": {
+    "description": "写日记和整理自我笔记用的模型（按顺序尝试）",
+    "type": "list",
+    "default": [],
+    "hint": "填 AstrBot 后台「服务提供商」里的提供商 ID，例如 deepseek/deepseek-chat。留空列表或全部失败时不写日记（会在日志里留下警告）。"
+  },
+  "write_time": {
+    "description": "每晚自动写日记时间（北京时间 HH:MM）",
+    "type": "string",
+    "default": "23:50",
+    "hint": "固定按北京时间（UTC+8）计算。写的是“当天”的日记；错过了会在下次启动后补写。"
+  },
+  "raw_retention_days": {
+    "description": "原始聊天记录保留天数",
+    "type": "int",
+    "default": 7,
+    "hint": "写完日记后，原始记录只保留这么多天；还没写成日记的那天不会被删。日记文件本身一直保留。"
+  },
+  "max_log_chars": {
+    "description": "单日交给模型的聊天记录最大字数",
+    "type": "int",
+    "default": 6000,
+    "hint": "当天记录太长时只取最后这么多字交给模型，避免超出模型上下文。"
+  },
+  "catch_up_delay_seconds": {
+    "description": "启动后多久补写漏掉的日记（秒）",
+    "type": "int",
+    "default": 120,
+    "hint": "AstrBot 重启后等这么久再检查过去几天有没有漏写的日记，给模型服务留出初始化时间。"
+  },
+  "inject_enabled": {
+    "description": "主人私聊时把自我笔记和最近日记注入系统提示词当背景",
+    "type": "bool",
+    "default": true,
+    "hint": "只注入到主人私聊的 LLM 请求里，不会出现在群里，也不会额外发消息。"
+  },
+  "inject_diary_days": {
+    "description": "注入时带上最近几篇日记",
+    "type": "int",
+    "default": 2,
+    "hint": "设为 0 表示只注入自我笔记、不注入日记。"
+  },
+  "inject_diary_chars": {
+    "description": "每篇日记最多注入多少字",
+    "type": "int",
+    "default": 350,
+    "hint": "超长日记会被截断并加省略号，避免占用过多上下文。"
+  },
+  "max_self_notes": {
+    "description": "自我笔记最多保留多少条",
+    "type": "int",
+    "default": 30,
+    "hint": "整理时超过这个条数会合并或删掉最不重要的；也可以发 /自我笔记 手动查看和删除。"
+  }
+}
